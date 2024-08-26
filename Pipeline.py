@@ -9,12 +9,15 @@ import os
 import base64
 from io import BytesIO
 from datetime import datetime
+import base64
+import hashlib
 PROPERTIES = ['Density', 'Conductivity', 'cP_mean', 'Temperature']
 TABLE_NAMES = ['experiments', 'solvents', 'salts']
 INSERT_EXPERIMENT_STRING = "INSERT INTO experiments (GUID, Density, Conductivity, cP_mean, Temperature, CompositionID) VALUES (?, ?, ?, ?, ?, ?)"
 INSERT_SOLVENT_STRING = "INSERT INTO solvents (GUID, Solvent, Percentage) VALUES (?, ?, ?)"
 INSERT_SALT_STRING = "INSERT INTO salts (GUID, Salt, Molality) VALUES (?, ?, ?)"
 DEFAULT_DB = "Dummy.db"
+DATE_FORMATS = ["%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"]
 
 
 def get_data_from_database(query, db_file=DEFAULT_DB):
@@ -40,19 +43,18 @@ def edit_database(queries, db_file=DEFAULT_DB):
     conn.commit()
     conn.close()
 
-def insert_new_data(GUID, compositionID, compositions, density, conductivity, cP_mean, temperature, db_file=DEFAULT_DB):
-    queries = generate_edit_queries([GUID], [compositionID], [compositions], [density], [conductivity], [cP_mean], [temperature])
+def insert_new_data(compositionID, compositions, density, conductivity, cP_mean, temperature, date, trial, db_file=DEFAULT_DB):
+    queries = generate_edit_queries([compositionID], [compositions], [density], [conductivity], [cP_mean], [temperature], [date], [trial])
     edit_database(queries, db_file)
 
-def insert_new_data_bulk(GUID, compositionID, compositions, density, conductivity, cP_mean, temperature, db_file=DEFAULT_DB):
-    queries = generate_edit_queries(GUID, compositionID, compositions, density, conductivity, cP_mean, temperature)
+def insert_new_data_bulk(compositionID, compositions, density, conductivity, cP_mean, temperature, date, trial, db_file=DEFAULT_DB):
+    queries = generate_edit_queries(compositionID, compositions, density, conductivity, cP_mean, temperature, date, trial)
     edit_database(queries, db_file)
 
-def generate_edit_queries(GUIDs, compositionIDs, compositionss, densitys, conductivitys, cP_means, temperatures):
+def generate_edit_queries(compositionIDs, compositionss, densitys, conductivitys, cP_means, temperatures, dates, trials):
     queries = []
-    for GUID, compositionID, compositions, density, conductivity, cP_mean, temperature in zip(GUIDs, compositionIDs, compositionss, densitys, conductivitys, cP_means, temperatures):
-        if GUID == None or not isinstance(GUID, str):
-            GUID = str(uuid.uuid4()).replace('-', '').upper()
+    for compositionID, compositions, density, conductivity, cP_mean, temperature, date, trial in zip(compositionIDs, compositionss, densitys, conductivitys, cP_means, temperatures, dates, trials):
+        GUID = hash_datapoint(compositionID, density, cP_mean, conductivity, temperature, date, trial)
         for current in TABLE_NAMES:
             delete_query = 'DELETE FROM ' + current + ' where GUID = ?'
             queries.append((delete_query, (GUID,)))
@@ -162,4 +164,32 @@ def get_choices():
       {"Title":"Salts", "Options":sorted(salts, key=str.lower)}]
     return options
 
-#insert_new_data(1, 'DMC|100|LiPF6|2.5', 1.2, 1.3, 1.4, 0, db_file='Dummy.db')
+def convert_date(date_string):
+    for input_format in DATE_FORMATS:
+        try:
+            # Parse the date string according to the given input format
+            date_obj = datetime.strptime(date_string, input_format)
+            
+            # Convert the date object to "MM/DD/YYYY" format
+            formatted_date = date_obj.strftime("%m/%d/%Y")
+            return formatted_date
+        except ValueError as e:
+            pass
+    return 'Your date must be in MM/DD/YY format!'
+
+def hash_datapoint(CompositionID, density, cP_mean, conductivity, temperature, date, trial):
+    # Convert the components into strings
+    density_str = f"{density:.10f}" if density is not None else "None"
+    cP_mean_str = f"{cP_mean:.10f}" if cP_mean is not None else "None"
+    conductivity_str = f"{conductivity:.10f}" if conductivity is not None else "None"
+    temperature_str = f"{temperature:.10f}" if temperature is not None else "None"
+    trial_str = str(trial)
+    date_str = convert_date(date)
+    
+    hash_input = f"{CompositionID}|{density_str}|{cP_mean_str}|{conductivity_str}|{temperature_str}|{date_str}|{trial_str}"
+    # Generate the hash using SHA-384
+    hash_object = hashlib.sha256(hash_input.encode('utf-8'))
+    hash_bytes = hash_object.digest()[8:32]
+    hash_base64 = base64.b64encode(hash_bytes).decode('utf-8')
+    return hash_base64
+

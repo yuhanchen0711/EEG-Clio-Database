@@ -4,12 +4,12 @@ from dash import Dash, dash_table, html, dcc, callback, Output, Input, State
 import plotly.express as px
 import pandas as pd
 import dash_bootstrap_components as dbc
-from Pipeline import get_choices, generate_df, insert_new_data, insert_new_data_bulk, PROPERTIES
+from Pipeline import get_choices, generate_df, insert_new_data, insert_new_data_bulk, PROPERTIES, convert_date, DATE_FORMATS
 from io import StringIO
-
+import datetime
 
 app = Dash(__name__, suppress_callback_exceptions=True)
-input_properties = ["GUID", "CompositionID"]
+input_properties = ["CompositionID"]
 GUID_LENGTH = 32
 
 # Define the layout of the app
@@ -56,9 +56,13 @@ input_content = [
     dbc.Alert(id='file-alert', is_open=False, duration=4000),
     html.Div('Alternatively, you can manually enter the lab data.'),
     html.Div([item for pair in zip(
-        [html.Label(current) for current in input_properties + PROPERTIES], 
+        [html.Label(current) for current in input_properties + PROPERTIES + ['Date', 'Trial']], 
         [dcc.Input(id= current + '-input', type='text', value=None) for current in input_properties]
       + [dcc.Input(id= current + '-input', type='number', value=None) for current in PROPERTIES]
+      + [dcc.DatePickerSingle(
+            id='date-picker-single',
+            date=datetime.date.today()  # set today's date as the default
+        ), dcc.Input(id='Trial-input', type='number', value=None)]
         ) for item in pair], id='inputs'),
     dbc.Alert(id='alert', is_open=False, duration=4000),
     html.Button('Add Data', id='add-data-button', n_clicks=0),
@@ -79,19 +83,16 @@ def display_page(pathname):
 @app.callback(
     [Output('alert', 'children'), Output('alert', 'is_open')],
     Input('add-data-button', 'n_clicks'),
-    [State(current + '-input', 'value') for current in input_properties + PROPERTIES],
-    
+    [State(current + '-input', 'value') for current in input_properties + PROPERTIES] + [State('date-picker-single', 'date'), State('Trial-input', 'value')],
+    prevent_initial_call=True
 )
-def input_data(n_clicks, GUID, CompositionID, Density, Conductivity, cP_mean, Temperature):
-    if n_clicks > 0:
+def input_data(n_clicks, CompositionID, Density, Conductivity, cP_mean, Temperature, date, Trial):
         #Check the correctness of the input
-        GUID, compositions = check_validity(GUID, CompositionID, Density, Conductivity, cP_mean, Temperature)
-        if isinstance(compositions, str):
-            return [compositions, True]
-        insert_new_data(GUID, CompositionID, compositions, Density, Conductivity, cP_mean, Temperature)
-        return ['Data submitted successfully', True]
-    else:
-        return ['', False]
+    compositions = check_validity(CompositionID, Density, Conductivity, cP_mean, Temperature, date, Trial)
+    if isinstance(compositions, str):
+        return [compositions, True]
+    insert_new_data(CompositionID, compositions, Density, Conductivity, cP_mean, Temperature, date, Trial)
+    return ['Data submitted successfully', True]
 
 @app.callback([Output('file-alert', 'children'), Output('file-alert', 'is_open')],
               Input('upload-file', 'contents'),
@@ -103,7 +104,13 @@ def update_output(contents, filename):
         return [children, True]
 
 # Input page helper function
-def check_validity(GUID, CompositionID, Density, Conductivity, cP_mean, Temperature):
+def check_validity(CompositionID, Density, Conductivity, cP_mean, Temperature, Date, Trial):
+    # Check Dates
+    Date = convert_date(Date)
+    try:
+        datetime.datetime.strptime(Date, DATE_FORMATS[0])
+    except ValueError:
+        return Date
     if Density is not None and Density < 0:
         return 'Density must be greater than zero!'
     if Conductivity is not None and Conductivity < 0:
@@ -112,21 +119,14 @@ def check_validity(GUID, CompositionID, Density, Conductivity, cP_mean, Temperat
         return 'cP_mean must be greater than zero!'
     if Temperature is not None and Temperature < -273.15:
         return 'Temperature must be greater than -273.15 Celsius!'
-    if GUID is not None:
-        if not isinstance(GUID, str) or len(GUID) == 0:
-            GUID = None
-        elif len(GUID) != GUID_LENGTH:
-            return 'The length of GUID should be 32.'
-        try:
-            int(GUID, 16)
-            GUID = GUID.upper()
-        except ValueError:
-            return 'The GUID must be a valid hexadecimal number.'
-        except TypeError:
-            GUID = None
     if CompositionID is None:
         return 'Please enter the composition ID.'
+    if not isinstance(Trial, int) and Trial.is_integer():
+        return 'Trial must be integer.'
+    if Trial < 0:
+        return 'Trial must be greater than zero!'
     else:
+        # Check compositionID
         error_comp_id = 'Please enter a valid composition ID.'
         splitted_string = CompositionID.split('|')
         if len(splitted_string) != 4:
@@ -164,28 +164,29 @@ def check_validity(GUID, CompositionID, Density, Conductivity, cP_mean, Temperat
                 return error_comp_id
     return (solvents, percentage, salts, molality)
 
+
 def parse_contents(contents, filename):
     content_type, content_string = contents.split(',')
     decoded = base64.b64decode(content_string)
-    try:
-        if 'csv' in filename:
+    #try:
+    if 'csv' in filename:
             # Assume that the user uploaded a CSV file
-            df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
-            compositions = []
-            for index, row in df.iterrows():
-                try:
-                    composition = check_validity(row['GUID'], row['CompositionID'], row['Density'], row['Conductivity'], row['cP_mean'], row['Temperature'])
-                except KeyError as e:
-                    return 'Your CSV file must have a ' + e.args[0] + ' column!'
-                if isinstance(composition, str):
-                    return 'Error on line ' + str(index + 2) + ': ' + row['compositions']
-                compositions.append(composition)
-            insert_new_data_bulk(df['GUID'], df['CompositionID'], compositions, df['Density'], df['Conductivity'], df['cP_mean'], df['Temperature'])
-            return 'Data uploaded successfully.'
-        else:
-            return 'You must uploada CSV file'
-    except Exception as e:
-        return f'There was an error processing this file: {e}'
+        df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
+        compositions = []
+        for index, row in df.iterrows():
+            try:
+                composition = check_validity(row['CompositionID'], row['Density'], row['Conductivity'], row['cP_mean'], row['Temperature'], row['Date'], row['Trial'])
+            except KeyError as e:
+                return 'Your CSV file must have a ' + e.args[0] + ' column!'
+            if isinstance(composition, str):
+                return 'Error on line ' + str(index + 2) + ': ' + composition
+            compositions.append(composition)
+        insert_new_data_bulk(df['CompositionID'], compositions, df['Density'], df['Conductivity'], df['cP_mean'], df['Temperature'], df['Date'], df['Trial'])
+        return 'Data uploaded successfully.'
+    else:
+        return 'You must upload a CSV file'
+    #except Exception as e:
+        #return f'There was an error processing this file: {e}'
 
 @app.callback(
     Output('container', 'children'),
