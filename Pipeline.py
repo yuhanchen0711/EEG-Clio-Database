@@ -6,17 +6,19 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import os
+import io
 import base64
 from io import BytesIO
 from datetime import datetime
 import base64
 import hashlib
-PROPERTIES = ['Density', 'Conductivity', 'cP_mean', 'Temperature']
+PROPERTIES = ['Density', 'Conductivity', 'Viscosity', 'Temperature']
+UNITS = ['g/cm^3', 'mS/cm', 'cP', 'C']
 TABLE_NAMES = ['experiments', 'solvents', 'salts']
-INSERT_EXPERIMENT_STRING = "INSERT INTO experiments (GUID, Density, Conductivity, cP_mean, Temperature, CompositionID) VALUES (?, ?, ?, ?, ?, ?)"
+INSERT_EXPERIMENT_STRING = "INSERT INTO experiments (GUID, Density, Conductivity, Viscosity, Temperature, CompositionID) VALUES (?, ?, ?, ?, ?, ?)"
 INSERT_SOLVENT_STRING = "INSERT INTO solvents (GUID, Solvent, Percentage) VALUES (?, ?, ?)"
 INSERT_SALT_STRING = "INSERT INTO salts (GUID, Salt, Molality) VALUES (?, ?, ?)"
-DEFAULT_DB = "Dummy.db"
+DEFAULT_DB = "Database.db"
 DATE_FORMATS = ["%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"]
 
 
@@ -43,22 +45,22 @@ def edit_database(queries, db_file=DEFAULT_DB):
     conn.commit()
     conn.close()
 
-def insert_new_data(compositionID, compositions, density, conductivity, cP_mean, temperature, date, trial, db_file=DEFAULT_DB):
-    queries = generate_edit_queries([compositionID], [compositions], [density], [conductivity], [cP_mean], [temperature], [date], [trial])
+def insert_new_data(compositionID, compositions, density, conductivity, viscosity, temperature, date, trial, db_file=DEFAULT_DB):
+    queries = generate_edit_queries([compositionID], [compositions], [density], [conductivity], [viscosity], [temperature], [date], [trial])
     edit_database(queries, db_file)
 
-def insert_new_data_bulk(compositionID, compositions, density, conductivity, cP_mean, temperature, date, trial, db_file=DEFAULT_DB):
-    queries = generate_edit_queries(compositionID, compositions, density, conductivity, cP_mean, temperature, date, trial)
+def insert_new_data_bulk(compositionID, compositions, density, conductivity, viscosity, temperature, date, trial, db_file=DEFAULT_DB):
+    queries = generate_edit_queries(compositionID, compositions, density, conductivity, viscosity, temperature, date, trial)
     edit_database(queries, db_file)
 
-def generate_edit_queries(compositionIDs, compositionss, densitys, conductivitys, cP_means, temperatures, dates, trials):
+def generate_edit_queries(compositionIDs, compositionss, densitys, conductivitys, viscositys, temperatures, dates, trials):
     queries = []
-    for compositionID, compositions, density, conductivity, cP_mean, temperature, date, trial in zip(compositionIDs, compositionss, densitys, conductivitys, cP_means, temperatures, dates, trials):
-        GUID = hash_datapoint(compositionID, density, cP_mean, conductivity, temperature, date, trial)
+    for compositionID, compositions, density, conductivity, viscosity, temperature, date, trial in zip(compositionIDs, compositionss, densitys, conductivitys, viscositys, temperatures, dates, trials):
+        GUID = hash_datapoint(compositionID, density, viscosity, conductivity, temperature, date, trial)
         for current in TABLE_NAMES:
             delete_query = 'DELETE FROM ' + current + ' where GUID = ?'
             queries.append((delete_query, (GUID,)))
-        queries.append((INSERT_EXPERIMENT_STRING, (GUID, density, conductivity, cP_mean, temperature, compositionID)))
+        queries.append((INSERT_EXPERIMENT_STRING, (GUID, density, conductivity, viscosity, temperature, compositionID)))
         solvents = compositions[0]
         percentage = compositions[1]
         salts = compositions[2]
@@ -97,7 +99,90 @@ def generate_query(properties, solvents, salts, logic='and'):
         query += ' INNER JOIN experiments e ON ' + previous + '.GUID = e.GUID'
     return query
 
+# Input page helper function
+def check_validity(CompositionID, Density, Conductivity, Viscosity, Temperature, Date, Trial):
+    # Check Dates
+    Date = convert_date(Date)
+    try:
+        datetime.strptime(Date, DATE_FORMATS[0])
+    except ValueError:
+        return Date
+    if Density is not None and Density < 0:
+        return 'Density must be greater than zero!'
+    if Conductivity is not None and Conductivity < 0:
+        return 'Conductivity must be greater than zero!'
+    if Viscosity is not None and Viscosity < 0:
+        return 'Viscosity must be greater than zero!'
+    if Temperature is not None and Temperature < -273.15:
+        return 'Temperature must be greater than -273.15 Celsius!'
+    if CompositionID is None:
+        return 'Please enter the composition ID.'
+    if not isinstance(Trial, int) and Trial.is_integer():
+        return 'Trial must be integer.'
+    if Trial < 0:
+        return 'Trial must be greater than zero!'
+    else:
+        # Check compositionID
+        error_comp_id = 'Please enter a valid composition ID.'
+        splitted_string = CompositionID.split('|')
+        if len(splitted_string) != 4:
+            return error_comp_id
+        solvents = splitted_string[0].split('_')
+        percentage = splitted_string[1].split('_')
+        if len(solvents) != len(percentage):
+            return error_comp_id
+        for current in solvents:
+            if len(current) <= 0 or not (current[0].isupper() and current.isalnum()):
+                return error_comp_id
+        for i in range(len(percentage)):
+            try:
+                percentage[i] = float(percentage[i])
+            except ValueError:
+                return error_comp_id
+            if percentage[i] <= 0:
+                return error_comp_id
+        if abs(sum(percentage) - 100) > 1E-10:
+            return 'Percentages of solvents must sum up to 100.'
 
+        salts = splitted_string[2].split('_')
+        molality = splitted_string[3].split('_')
+        if len(salts) != len(molality):
+            return error_comp_id
+        for current in salts:
+            if len(current) <= 0 or not (current[0].isupper() and current.isalnum()):
+                return error_comp_id
+        for i in range(len(molality)):
+            try:
+                molality[i] = float(molality[i])
+            except ValueError:
+                return error_comp_id
+            if percentage[i] <= 0:
+                return error_comp_id
+    return (solvents, percentage, salts, molality)
+
+
+def parse_contents(contents, filename):
+    content_type, content_string = contents.split(',')
+    decoded = base64.b64decode(content_string)
+    #try:
+    if 'csv' in filename:
+            # Assume that the user uploaded a CSV file
+        df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
+        compositions = []
+        for index, row in df.iterrows():
+            try:
+                composition = check_validity(row['CompositionID'], row['Density'], row['Conductivity'], row['Viscosity'], row['Temperature'], row['Date'], row['Trial'])
+            except KeyError as e:
+                return 'Your CSV file must have a ' + e.args[0] + ' column!'
+            if isinstance(composition, str):
+                return 'Error on line ' + str(index + 2) + ': ' + composition
+            compositions.append(composition)
+        insert_new_data_bulk(df['CompositionID'], compositions, df['Density'], df['Conductivity'], df['Viscosity'], df['Temperature'], df['Date'], df['Trial'])
+        return 'Data uploaded successfully.'
+    else:
+        return 'You must upload a CSV file'
+
+# Home page helper functions
 def generate_graph(df, file_name, c, x, y, z=None):
     fig = plt.figure()
     ax = None
@@ -177,19 +262,18 @@ def convert_date(date_string):
             pass
     return 'Your date must be in MM/DD/YY format!'
 
-def hash_datapoint(CompositionID, density, cP_mean, conductivity, temperature, date, trial):
+def hash_datapoint(CompositionID, density, viscosity, conductivity, temperature, date, trial):
     # Convert the components into strings
     density_str = f"{density:.10f}" if density is not None else "None"
-    cP_mean_str = f"{cP_mean:.10f}" if cP_mean is not None else "None"
+    viscosity_str = f"{viscosity:.10f}" if viscosity is not None else "None"
     conductivity_str = f"{conductivity:.10f}" if conductivity is not None else "None"
     temperature_str = f"{temperature:.10f}" if temperature is not None else "None"
     trial_str = str(trial)
     date_str = convert_date(date)
     
-    hash_input = f"{CompositionID}|{density_str}|{cP_mean_str}|{conductivity_str}|{temperature_str}|{date_str}|{trial_str}"
+    hash_input = f"{CompositionID}|{density_str}|{viscosity_str}|{conductivity_str}|{temperature_str}|{date_str}|{trial_str}"
     # Generate the hash using SHA-384
     hash_object = hashlib.sha256(hash_input.encode('utf-8'))
-    hash_bytes = hash_object.digest()[8:32]
-    hash_base64 = base64.b64encode(hash_bytes).decode('utf-8')
-    return hash_base64
+    hash_bytes = hash_object.digest()
+    return hash_bytes
 

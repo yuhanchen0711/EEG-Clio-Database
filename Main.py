@@ -4,9 +4,10 @@ from dash import Dash, dash_table, html, dcc, callback, Output, Input, State
 import plotly.express as px
 import pandas as pd
 import dash_bootstrap_components as dbc
-from Pipeline import get_choices, generate_df, insert_new_data, insert_new_data_bulk, PROPERTIES, convert_date, DATE_FORMATS
+from Pipeline import get_choices, generate_df, insert_new_data, insert_new_data_bulk, PROPERTIES, UNITS, convert_date, DATE_FORMATS, check_validity, parse_contents
 from io import StringIO
 import datetime
+import binascii
 
 app = Dash(__name__, suppress_callback_exceptions=True)
 input_properties = ["CompositionID"]
@@ -56,7 +57,8 @@ input_content = [
     dbc.Alert(id='file-alert', is_open=False, duration=4000),
     html.Div('Alternatively, you can manually enter the lab data.'),
     html.Div([item for pair in zip(
-        [html.Label(current) for current in input_properties + PROPERTIES + ['Date', 'Trial']], 
+        [html.Label(current) for current in input_properties + 
+        [prop + ' (' + unit + ')' for prop, unit in zip(PROPERTIES, UNITS)] + ['Date', 'Trial']], 
         [dcc.Input(id= current + '-input', type='text', value=None) for current in input_properties]
       + [dcc.Input(id= current + '-input', type='number', value=None) for current in PROPERTIES]
       + [dcc.DatePickerSingle(
@@ -86,12 +88,12 @@ def display_page(pathname):
     [State(current + '-input', 'value') for current in input_properties + PROPERTIES] + [State('date-picker-single', 'date'), State('Trial-input', 'value')],
     prevent_initial_call=True
 )
-def input_data(n_clicks, CompositionID, Density, Conductivity, cP_mean, Temperature, date, Trial):
+def input_data(n_clicks, CompositionID, Density, Conductivity, Viscosity, Temperature, date, Trial):
         #Check the correctness of the input
-    compositions = check_validity(CompositionID, Density, Conductivity, cP_mean, Temperature, date, Trial)
+    compositions = check_validity(CompositionID, Density, Conductivity, Viscosity, Temperature, date, Trial)
     if isinstance(compositions, str):
         return [compositions, True]
-    insert_new_data(CompositionID, compositions, Density, Conductivity, cP_mean, Temperature, date, Trial)
+    insert_new_data(CompositionID, compositions, Density, Conductivity, Viscosity, Temperature, date, Trial)
     return ['Data submitted successfully', True]
 
 @app.callback([Output('file-alert', 'children'), Output('file-alert', 'is_open')],
@@ -103,96 +105,10 @@ def update_output(contents, filename):
         children = parse_contents(contents, filename)
         return [children, True]
 
-# Input page helper function
-def check_validity(CompositionID, Density, Conductivity, cP_mean, Temperature, Date, Trial):
-    # Check Dates
-    Date = convert_date(Date)
-    try:
-        datetime.datetime.strptime(Date, DATE_FORMATS[0])
-    except ValueError:
-        return Date
-    if Density is not None and Density < 0:
-        return 'Density must be greater than zero!'
-    if Conductivity is not None and Conductivity < 0:
-        return 'Conductivity must be greater than zero!'
-    if cP_mean is not None and cP_mean < 0:
-        return 'cP_mean must be greater than zero!'
-    if Temperature is not None and Temperature < -273.15:
-        return 'Temperature must be greater than -273.15 Celsius!'
-    if CompositionID is None:
-        return 'Please enter the composition ID.'
-    if not isinstance(Trial, int) and Trial.is_integer():
-        return 'Trial must be integer.'
-    if Trial < 0:
-        return 'Trial must be greater than zero!'
-    else:
-        # Check compositionID
-        error_comp_id = 'Please enter a valid composition ID.'
-        splitted_string = CompositionID.split('|')
-        if len(splitted_string) != 4:
-            return error_comp_id
-        solvents = splitted_string[0].split('_')
-        percentage = splitted_string[1].split('_')
-        if len(solvents) != len(percentage):
-            return error_comp_id
-        for current in solvents:
-            if len(current) <= 0 or not (current[0].isupper() and current.isalnum()):
-                return error_comp_id
-        for i in range(len(percentage)):
-            try:
-                percentage[i] = float(percentage[i])
-            except ValueError:
-                return error_comp_id
-            if percentage[i] <= 0:
-                return error_comp_id
-        if abs(sum(percentage) - 100) > 1E-10:
-            return 'Percentages of solvents must sum up to 100.'
-
-        salts = splitted_string[2].split('_')
-        molality = splitted_string[3].split('_')
-        if len(salts) != len(molality):
-            return error_comp_id
-        for current in salts:
-            if len(current) <= 0 or not (current[0].isupper() and current.isalnum()):
-                return error_comp_id
-        for i in range(len(molality)):
-            try:
-                molality[i] = float(molality[i])
-            except ValueError:
-                return error_comp_id
-            if percentage[i] <= 0:
-                return error_comp_id
-    return (solvents, percentage, salts, molality)
-
-
-def parse_contents(contents, filename):
-    content_type, content_string = contents.split(',')
-    decoded = base64.b64decode(content_string)
-    #try:
-    if 'csv' in filename:
-            # Assume that the user uploaded a CSV file
-        df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
-        compositions = []
-        for index, row in df.iterrows():
-            try:
-                composition = check_validity(row['CompositionID'], row['Density'], row['Conductivity'], row['cP_mean'], row['Temperature'], row['Date'], row['Trial'])
-            except KeyError as e:
-                return 'Your CSV file must have a ' + e.args[0] + ' column!'
-            if isinstance(composition, str):
-                return 'Error on line ' + str(index + 2) + ': ' + composition
-            compositions.append(composition)
-        insert_new_data_bulk(df['CompositionID'], compositions, df['Density'], df['Conductivity'], df['cP_mean'], df['Temperature'], df['Date'], df['Trial'])
-        return 'Data uploaded successfully.'
-    else:
-        return 'You must upload a CSV file'
-    #except Exception as e:
-        #return f'There was an error processing this file: {e}'
-
 @app.callback(
     Output('container', 'children'),
     Input('form-options', 'data')
 )
-
 def generate_options(a):
     form_options = get_choices()
     form_elements = []
@@ -211,6 +127,7 @@ def generate_options(a):
     
     return form_elements
 
+# Home page call back functions
 def generate_options_df(form_elements):
     options = {}
     for current in form_elements:
@@ -228,6 +145,8 @@ def generate_options_df(form_elements):
 def show_table(n_clicks, form_elements):
     # Extract selected options from form_elements
     options, df = generate_options_df(form_elements)
+    if 'ExperimentID' in df.columns:
+        df['ExperimentID'] = df['ExperimentID'].apply(lambda x: binascii.hexlify(x).decode('utf-8'))
     buffer = StringIO()
     df.to_csv(buffer, index=False)
     csv_string = buffer.getvalue()
@@ -257,9 +176,7 @@ def download_table(n_clicks, data):
 )
 def show_graph(n_clicks, form_elements=None):
     # Extract selected options from form_elements
-    options, df = generate_options_df(form_elements)
-    # Replace with your logic to generate base64 images
-    # For now, use a placeholder image       
+    options, df = generate_options_df(form_elements)       
     for i in range(len(options['Solvents'])):
         options['Solvents'][i] += '_Percentage'
     for i in range(len(options['Salts'])):
