@@ -30,7 +30,7 @@ def read_from_sqlite(db_file, query):
         conn.close()
 
 # Example usage
-db_file = 'Dummy.db'  # Replace with your database file path
+db_file = 'Database.db'  # Replace with your database file path
 
 while True:
     query = input("Enter your SQL query: ")
