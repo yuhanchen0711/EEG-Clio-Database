@@ -4,7 +4,7 @@ from dash import Dash, dash_table, html, dcc, callback, Output, Input, State
 import plotly.express as px
 import pandas as pd
 import dash_bootstrap_components as dbc
-from Pipeline import get_choices, generate_df, insert_new_data, insert_new_data_bulk, PROPERTIES, UNITS, convert_date, DATE_FORMATS, check_validity, parse_contents
+from Pipeline import get_choices, generate_df, insert_new_data, insert_new_data_bulk, PROPERTY, INPUT, ALL_INPUT, PROPERTIES, UNITS, convert_date, DATE_FORMATS, check_validity, parse_contents
 from io import StringIO
 import datetime
 import binascii
@@ -56,18 +56,12 @@ input_content = [
     ),
     dbc.Alert(id='file-alert', is_open=False, duration=4000),
     html.Div('Alternatively, you can manually enter the lab data.'),
-    html.Div([item for pair in zip(
-        [html.Label(current) for current in input_properties + 
-        [prop + ' (' + unit + ')' for prop, unit in zip(PROPERTIES, UNITS)] + ['Date', 'Trial']], 
-        [dcc.Input(id= current + '-input', type='text', value=None) for current in input_properties]
-      + [dcc.Input(id= current + '-input', type='number', value=None) for current in PROPERTIES]
-      + [dcc.DatePickerSingle(
-            id='date-picker-single',
-            date=datetime.date.today()  # set today's date as the default
-        ), dcc.Input(id='Trial-input', type='number', value=None)]
-        ) for item in pair], id='inputs'),
+    
+    html.Div([item for pair in zip([f"{ALL_INPUT['Property'].iloc[i]} {ALL_INPUT['Units'].iloc[i]}" for i in range(len(ALL_INPUT['Property']))], 
+    [current[1]['Type'].inputstructure(current[1]['Property'] + '-input') for current in ALL_INPUT.iterrows()]) for item in pair], id='inputs'),
+        
     dbc.Alert(id='alert', is_open=False, duration=4000),
-    html.Button('Add Data', id='add-data-button', n_clicks=0),
+    html.Button('Add Data', id='add-data-button', n_clicks=0)
 ]
 
 # Switch page function
@@ -85,15 +79,15 @@ def display_page(pathname):
 @app.callback(
     [Output('alert', 'children'), Output('alert', 'is_open')],
     Input('add-data-button', 'n_clicks'),
-    [State(current + '-input', 'value') for current in input_properties + PROPERTIES] + [State('date-picker-single', 'date'), State('Trial-input', 'value')],
+    [State(current[1]['Property'] + '-input', current[1]['Type'].getStructureValue()) for current in ALL_INPUT.iterrows()],
     prevent_initial_call=True
 )
-def input_data(n_clicks, CompositionID, Density, Conductivity, Viscosity, Temperature, date, Trial):
+def input_data(n_clicks, *args):
         #Check the correctness of the input
-    compositions = check_validity(CompositionID, Density, Conductivity, Viscosity, Temperature, date, Trial)
+    compositions = check_validity(args)
     if isinstance(compositions, str):
         return [compositions, True]
-    insert_new_data(CompositionID, compositions, Density, Conductivity, Viscosity, Temperature, date, Trial)
+    insert_new_data(compositions)
     return ['Data submitted successfully', True]
 
 @app.callback([Output('file-alert', 'children'), Output('file-alert', 'is_open')],
@@ -110,6 +104,7 @@ def update_output(contents, filename):
     Input('form-options', 'data')
 )
 def generate_options(a):
+    #print([current[1]['Type'] for current in ALL_INPUT.iterrows()])
     form_options = get_choices()
     form_elements = []
     for category in form_options:

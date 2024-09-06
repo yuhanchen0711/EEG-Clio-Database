@@ -12,6 +12,20 @@ from io import BytesIO
 from datetime import datetime
 import base64
 import hashlib
+from CustomTypes import CustomType
+from TypeFunctions import *
+import json
+
+DATE_FORMATS = ["%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"]
+float_customtype = CustomType(getverifyNumberFunction(0, float('inf')), getNumberInput)
+PROPERTY = pd.DataFrame({'Property':['Density', 'Conductivity', 'Viscosity'], 'Type':[float_customtype, float_customtype, float_customtype], 'Units':['g/cm^3', 'mS/cm', 'cP']})
+INPUT = pd.DataFrame({'Property':['Temperature', 'CompositionID', 'Date', 'Trial'], 
+    'Type':[CustomType(getverifyNumberFunction(-273.15, float('inf')), getNumberInput), 
+    CustomType(verifyCompositionID, getStringInput), 
+    CustomType(getVerifyDateFunction(DATE_FORMATS), getDateInput),
+    CustomType(getverifyNumberFunction(0, float('inf'), integer=True), getNumberInput)], 
+    'Units':['C', '', '', '#']})
+ALL_INPUT = pd.concat([PROPERTY, INPUT])
 PROPERTIES = ['Density', 'Conductivity', 'Viscosity', 'Temperature']
 UNITS = ['g/cm^3', 'mS/cm', 'cP', 'C']
 TABLE_NAMES = ['experiments', 'solvents', 'salts']
@@ -19,7 +33,7 @@ INSERT_EXPERIMENT_STRING = "INSERT INTO experiments (GUID, Density, Conductivity
 INSERT_SOLVENT_STRING = "INSERT INTO solvents (GUID, Solvent, Percentage) VALUES (?, ?, ?)"
 INSERT_SALT_STRING = "INSERT INTO salts (GUID, Salt, Molality) VALUES (?, ?, ?)"
 DEFAULT_DB = "Database.db"
-DATE_FORMATS = ["%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"]
+
 
 
 def get_data_from_database(query, db_file=DEFAULT_DB):
@@ -45,19 +59,28 @@ def edit_database(queries, db_file=DEFAULT_DB):
     conn.commit()
     conn.close()
 
-def insert_new_data(compositionID, compositions, density, conductivity, viscosity, temperature, date, trial, db_file=DEFAULT_DB):
-    queries = generate_edit_queries([compositionID], [compositions], [density], [conductivity], [viscosity], [temperature], [date], [trial])
-    edit_database(queries, db_file)
+def insert_new_data(compositions):
+    queries = generate_edit_queries([compositions])
+    edit_database(queries, DEFAULT_DB)
 
-def insert_new_data_bulk(compositionID, compositions, density, conductivity, viscosity, temperature, date, trial, db_file=DEFAULT_DB):
-    queries = generate_edit_queries(compositionID, compositions, density, conductivity, viscosity, temperature, date, trial)
-    edit_database(queries, db_file)
+def insert_new_data_bulk(compositions):
+    queries = generate_edit_queries(compositions)
+    edit_database(queries, DEFAULT_DB)
 
-def generate_edit_queries(compositionIDs, compositionss, densitys, conductivitys, viscositys, temperatures, dates, trials):
+def generate_edit_queries(compositions):
     queries = []
-    for compositionID, compositions, density, conductivity, viscosity, temperature, date, trial in zip(compositionIDs, compositionss, densitys, conductivitys, viscositys, temperatures, dates, trials):
-        GUID = hash_datapoint(compositionID, density, viscosity, conductivity, temperature, date, trial)
-        for current in TABLE_NAMES:
+    for current in compositions[0]:
+        table_name = "current"
+        columns = ', '.join(compositions[0][current].keys())
+        placeholders = ', '.join('?' for _ in compositions[0][current])
+
+        # Generate SQL query to create table
+        create_table_query = f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join([f'{key} TEXT' for key in compositions[0][current].keys()])})"
+        queries.append(create_table_query)
+        '''
+    for current_composition in compositions:
+        GUID = hash_datapoint(current_composition['experiments'])
+        for current in current_composition:
             delete_query = 'DELETE FROM ' + current + ' where GUID = ?'
             queries.append((delete_query, (GUID,)))
         queries.append((INSERT_EXPERIMENT_STRING, (GUID, density, conductivity, viscosity, temperature, compositionID)))
@@ -69,15 +92,23 @@ def generate_edit_queries(compositionIDs, compositionss, densitys, conductivitys
             queries.append((INSERT_SOLVENT_STRING, (GUID, solvent, percent)))
         for salt, molality in zip(salts, molality):
             queries.append((INSERT_SALT_STRING, (GUID, salt, molality)))
+    '''
     return queries
     
 
 def generate_query(properties, solvents, salts, logic='and'):
     query = "SELECT e.GUID AS ExperimentID, CompositionID"
+    query2 = ') AS GUID'
+    query3 = "COALESCE(d.GUID"
     for current in properties:
         query += ', ' + current
     for current in solvents:
-        query += ',' + ' COALESCE(' + current.lower() + '_P, 0) AS ' + current + '_Percentage'
+        if logic == 'or':
+            query += ', ' + current + '_Percentage'
+            query3 += ', ' + current.lower() + '.GUID'
+            query2 += ',' + ' MAX(COALESCE(' + current.lower() + '_P, 0)) AS ' + current + '_Percentage'
+        else:
+            query += ',' + ' COALESCE(' + current.lower() + '_P, 0) AS ' + current + '_Percentage'
     for current in salts:
         query += ',' + ' COALESCE(' + current.lower() + '_M, 0) AS ' + current + '_Molality'
     
@@ -85,7 +116,7 @@ def generate_query(properties, solvents, salts, logic='and'):
     previous = 'e'
     if logic == 'or':
         way = ' FULL'
-        query += ' FROM dummy d'
+        query += ' FROM (SELECT ' + query3 + query2 + ' FROM dummy d'
         previous = 'd'
     else:
         query += ' FROM experiments e'
@@ -96,70 +127,27 @@ def generate_query(properties, solvents, salts, logic='and'):
         query += " INNER JOIN (SELECT GUID, Molality as " + current.lower() + "_M FROM salts WHERE Salt = '" + current + "') " + current.lower() + " ON " + previous + ".GUID = " + current.lower() + ".GUID"
         previous = current.lower()
     if logic == 'or':
-        query += ' INNER JOIN experiments e ON ' + previous + '.GUID = e.GUID'
+        query = query + ' GROUP BY ' + query3 + ')) ex'
+        query += ' LEFT JOIN experiments e ON ex.GUID = e.GUID'
     return query
 
 # Input page helper function
-def check_validity(CompositionID, Density, Conductivity, Viscosity, Temperature, Date, Trial):
-    # Check Dates
-    Date = convert_date(Date)
-    try:
-        datetime.strptime(Date, DATE_FORMATS[0])
-    except ValueError:
-        return Date
-    if Density is not None and Density < 0:
-        return 'Density must be greater than zero!'
-    if Conductivity is not None and Conductivity < 0:
-        return 'Conductivity must be greater than zero!'
-    if Viscosity is not None and Viscosity < 0:
-        return 'Viscosity must be greater than zero!'
-    if Temperature is not None and Temperature < -273.15:
-        return 'Temperature must be greater than -273.15 Celsius!'
-    if CompositionID is None:
-        return 'Please enter the composition ID.'
-    if not isinstance(Trial, int) and Trial.is_integer():
-        return 'Trial must be integer.'
-    if Trial < 0:
-        return 'Trial must be greater than zero!'
-    else:
-        # Check compositionID
-        error_comp_id = 'Please enter a valid composition ID.'
-        splitted_string = CompositionID.split('|')
-        if len(splitted_string) != 4:
-            return error_comp_id
-        solvents = splitted_string[0].split('_')
-        percentage = splitted_string[1].split('_')
-        if len(solvents) != len(percentage):
-            return error_comp_id
-        for current in solvents:
-            if len(current) <= 0 or not (current[0].isupper() and current.isalnum()):
-                return error_comp_id
-        for i in range(len(percentage)):
-            try:
-                percentage[i] = float(percentage[i])
-            except ValueError:
-                return error_comp_id
-            if percentage[i] <= 0:
-                return error_comp_id
-        if abs(sum(percentage) - 100) > 1E-10:
-            return 'Percentages of solvents must sum up to 100.'
-
-        salts = splitted_string[2].split('_')
-        molality = splitted_string[3].split('_')
-        if len(salts) != len(molality):
-            return error_comp_id
-        for current in salts:
-            if len(current) <= 0 or not (current[0].isupper() and current.isalnum()):
-                return error_comp_id
-        for i in range(len(molality)):
-            try:
-                molality[i] = float(molality[i])
-            except ValueError:
-                return error_comp_id
-            if percentage[i] <= 0:
-                return error_comp_id
-    return (solvents, percentage, salts, molality)
-
+def check_validity(args):
+    store_dict = {}
+    result = {}
+    for i in range(len(args)):
+        current_type = ALL_INPUT['Type'].iloc[i]
+        verify_result = current_type.verify(ALL_INPUT['Property'].iloc[i], args[i])
+        if type(verify_result) == str:
+            return verify_result
+        elif type(verify_result) == dict:
+            result.update(verify_result)
+        else:
+            store_dict[ALL_INPUT['Property'].iloc[i]] = verify_result
+    
+    result['experiments'] = store_dict
+    return result
+        
 
 def parse_contents(contents, filename):
     content_type, content_string = contents.split(',')
@@ -210,7 +198,7 @@ def generate_graph(df, file_name, c, x, y, z=None):
     return img_base64
 
 def generate_df(properties, solvents, salts):
-    query = generate_query(properties, solvents, salts, logic='and')
+    query = generate_query(properties, solvents, salts, logic='or')
     return get_data_from_database(query, db_file=DEFAULT_DB)
 
 def graphs(properties, solvents, salts):
@@ -262,18 +250,10 @@ def convert_date(date_string):
             pass
     return 'Your date must be in MM/DD/YY format!'
 
-def hash_datapoint(CompositionID, density, viscosity, conductivity, temperature, date, trial):
+def hash_datapoint(experiment_data):
     # Convert the components into strings
-    density_str = f"{density:.10f}" if density is not None else "None"
-    viscosity_str = f"{viscosity:.10f}" if viscosity is not None else "None"
-    conductivity_str = f"{conductivity:.10f}" if conductivity is not None else "None"
-    temperature_str = f"{temperature:.10f}" if temperature is not None else "None"
-    trial_str = str(trial)
-    date_str = convert_date(date)
-    
-    hash_input = f"{CompositionID}|{density_str}|{viscosity_str}|{conductivity_str}|{temperature_str}|{date_str}|{trial_str}"
-    # Generate the hash using SHA-384
-    hash_object = hashlib.sha256(hash_input.encode('utf-8'))
+    dict_str = json.dumps(experiment_data, sort_keys=True)
+    hash_object = hashlib.sha256(dict_str.encode('utf-8'))
     hash_bytes = hash_object.digest()
     return hash_bytes
 
