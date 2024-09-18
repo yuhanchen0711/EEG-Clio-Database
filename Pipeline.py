@@ -18,7 +18,7 @@ import json
 
 DATE_FORMATS = ["%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"]
 float_customtype = CustomType(getverifyNumberFunction(0, float('inf')), getNumberInput)
-PROPERTY = pd.DataFrame({'Property':['Density', 'Conductivity', 'Viscosity'], 'Type':[float_customtype, float_customtype, float_customtype], 'Units':['g/cm^3', 'mS/cm', 'cP']})
+PROPERTY = pd.DataFrame({'Property':['Mass', 'Volume', 'Density', 'Conductivity', 'Viscosity'], 'Type':[float_customtype, float_customtype, float_customtype, float_customtype, float_customtype], 'Units':['g', 'cm^3', 'g/cm^3', 'mS/cm', 'cP']})
 INPUT = pd.DataFrame({'Property':['Temperature', 'CompositionID', 'Date', 'Trial'], 
     'Type':[CustomType(getverifyNumberFunction(-273.15, float('inf')), getNumberInput), 
     CustomType(verifyCompositionID, getStringInput), 
@@ -26,6 +26,8 @@ INPUT = pd.DataFrame({'Property':['Temperature', 'CompositionID', 'Date', 'Trial
     CustomType(getverifyNumberFunction(0, float('inf'), integer=True), getNumberInput)], 
     'Units':['C', '', '', '#']})
 ALL_INPUT = pd.concat([PROPERTY, INPUT])
+MAIN_NAME = 'experiments'
+ASSOCIATE_NAME = 'dummy'
 PROPERTIES = ['Density', 'Conductivity', 'Viscosity', 'Temperature']
 UNITS = ['g/cm^3', 'mS/cm', 'cP', 'C']
 TABLE_NAMES = ['experiments', 'solvents', 'salts']
@@ -39,6 +41,7 @@ DEFAULT_DB = "Database.db"
 def get_data_from_database(query, db_file=DEFAULT_DB):
     # Connect to the SQLite database
     conn = sqlite3.connect(db_file)
+    print(query)
     try:
         # Use pandas to execute the SQL query and return a DataFrame
         df = pd.read_sql(query, conn)
@@ -70,47 +73,49 @@ def insert_new_data_bulk(compositions):
 def generate_edit_queries(compositions):
     queries = []
     for current in compositions[0]:
-        table_name = "current"
+        table_name = current
         columns = ', '.join(compositions[0][current].keys())
-        placeholders = ', '.join('?' for _ in compositions[0][current])
 
         # Generate SQL query to create table
-        create_table_query = f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join([f'{key} TEXT' for key in compositions[0][current].keys()])})"
-        queries.append(create_table_query)
-        '''
+        create_table_query = f"CREATE TABLE IF NOT EXISTS {table_name} (ID INTEGER(32) PRIMARY KEY, {', '.join(compositions[0][current].keys())})"
+        queries.append((create_table_query, ""))
     for current_composition in compositions:
         GUID = hash_datapoint(current_composition['experiments'])
-        for current in current_composition:
-            delete_query = 'DELETE FROM ' + current + ' where GUID = ?'
-            queries.append((delete_query, (GUID,)))
-        queries.append((INSERT_EXPERIMENT_STRING, (GUID, density, conductivity, viscosity, temperature, compositionID)))
-        solvents = compositions[0]
-        percentage = compositions[1]
-        salts = compositions[2]
-        molality = compositions[3]
-        for solvent, percent in zip(solvents, percentage):
-            queries.append((INSERT_SOLVENT_STRING, (GUID, solvent, percent)))
-        for salt, molality in zip(salts, molality):
-            queries.append((INSERT_SALT_STRING, (GUID, salt, molality)))
-    '''
+        for current_table in current_composition.keys():
+            new_df = 0
+            try:
+                new_df = pd.DataFrame(current_composition[current_table])
+            except ValueError:
+                new_df = pd.DataFrame(current_composition[current_table], index=['row1'])
+            
+            for index, row in new_df.iterrows():
+                columns = ', '.join(new_df.columns)
+                placeholders = ', '.join(["?" for _ in row])
+                query = f"INSERT OR REPLACE INTO {current_table} (ID, {columns}) VALUES (?, {placeholders})"
+                queries.append((query, (GUID,) + tuple(row)))
     return queries
     
 
 def generate_query(properties, solvents, salts, logic='and'):
-    query = "SELECT e.GUID AS ExperimentID, CompositionID"
-    query2 = ') AS GUID'
-    query3 = "COALESCE(d.GUID"
+    query = "SELECT e.ID AS ExperimentID"
+    query2 = ') AS ID'
+    query3 = "COALESCE(d.ID"
     for current in properties:
         query += ', ' + current
     for current in solvents:
         if logic == 'or':
             query += ', ' + current + '_Percentage'
-            query3 += ', ' + current.lower() + '.GUID'
+            query3 += ', ' + current.lower() + '.ID'
             query2 += ',' + ' MAX(COALESCE(' + current.lower() + '_P, 0)) AS ' + current + '_Percentage'
         else:
             query += ',' + ' COALESCE(' + current.lower() + '_P, 0) AS ' + current + '_Percentage'
     for current in salts:
-        query += ',' + ' COALESCE(' + current.lower() + '_M, 0) AS ' + current + '_Molality'
+        if logic == 'or':
+            query += ', ' + current + '_Molality'
+            query3 += ', ' + current.lower() + '.ID'
+            query2 += ',' + ' MAX(COALESCE(' + current.lower() + '_M, 0)) AS ' + current + '_Molality'
+        else:
+            query += ',' + ' COALESCE(' + current.lower() + '_M, 0) AS ' + current + '_Molality'
     
     way = ' INNER'
     previous = 'e'
@@ -121,15 +126,16 @@ def generate_query(properties, solvents, salts, logic='and'):
     else:
         query += ' FROM experiments e'
     for current in solvents:
-        query += way + " JOIN (SELECT GUID, Percentage as " + current.lower() + "_P FROM solvents WHERE Solvent = '" + current + "') " + current.lower() + " ON " + previous + ".GUID = " + current.lower() + ".GUID"
+        query += way + " JOIN (SELECT ID, percentage as " + current.lower() + "_P FROM solvents WHERE solvent = '" + current + "') " + current.lower() + " ON " + previous + ".ID = " + current.lower() + ".ID"
         previous = current.lower()
     for current in salts:
-        query += " INNER JOIN (SELECT GUID, Molality as " + current.lower() + "_M FROM salts WHERE Salt = '" + current + "') " + current.lower() + " ON " + previous + ".GUID = " + current.lower() + ".GUID"
+        query += " INNER JOIN (SELECT ID, molality as " + current.lower() + "_M FROM salts WHERE salt = '" + current + "') " + current.lower() + " ON " + previous + ".ID = " + current.lower() + ".ID"
         previous = current.lower()
     if logic == 'or':
         query = query + ' GROUP BY ' + query3 + ')) ex'
-        query += ' LEFT JOIN experiments e ON ex.GUID = e.GUID'
+        query += ' LEFT JOIN experiments e ON ex.ID = e.ID'
     return query
+    
 
 # Input page helper function
 def check_validity(args):
@@ -155,17 +161,17 @@ def parse_contents(contents, filename):
     #try:
     if 'csv' in filename:
             # Assume that the user uploaded a CSV file
-        df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
+        df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))[ALL_INPUT['Property']]
         compositions = []
         for index, row in df.iterrows():
             try:
-                composition = check_validity(row['CompositionID'], row['Density'], row['Conductivity'], row['Viscosity'], row['Temperature'], row['Date'], row['Trial'])
+                composition = check_validity(tuple(row))
             except KeyError as e:
                 return 'Your CSV file must have a ' + e.args[0] + ' column!'
             if isinstance(composition, str):
                 return 'Error on line ' + str(index + 2) + ': ' + composition
             compositions.append(composition)
-        insert_new_data_bulk(df['CompositionID'], compositions, df['Density'], df['Conductivity'], df['Viscosity'], df['Temperature'], df['Date'], df['Trial'])
+        insert_new_data_bulk(compositions)
         return 'Data uploaded successfully.'
     else:
         return 'You must upload a CSV file'
@@ -230,8 +236,8 @@ def graphs(properties, solvents, salts):
 def get_choices():
     solvent_query = "SELECT DISTINCT solvent FROM solvents"
     salt_query = "SELECT DISTINCT salt FROM salts"
-    solvents = get_data_from_database(solvent_query)['Solvent'].tolist()
-    salts = get_data_from_database(salt_query)['Salt'].tolist()
+    solvents = get_data_from_database(solvent_query)['solvent'].tolist()
+    salts = get_data_from_database(salt_query)['salt'].tolist()
     options = [{"Title":"Basic Properties", "Options":sorted(PROPERTIES, key=str.lower)},
       {"Title":"Solvents", "Options":sorted(solvents, key=str.lower)},
       {"Title":"Salts", "Options":sorted(salts, key=str.lower)}]

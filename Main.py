@@ -84,6 +84,7 @@ def display_page(pathname):
 )
 def input_data(n_clicks, *args):
         #Check the correctness of the input
+    print(args)
     compositions = check_validity(args)
     if isinstance(compositions, str):
         return [compositions, True]
@@ -104,7 +105,6 @@ def update_output(contents, filename):
     Input('form-options', 'data')
 )
 def generate_options(a):
-    #print([current[1]['Type'] for current in ALL_INPUT.iterrows()])
     form_options = get_choices()
     form_elements = []
     for category in form_options:
