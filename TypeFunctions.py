@@ -1,6 +1,7 @@
 import datetime
 import pandas as pd
 from dash import Dash, dash_table, html, dcc
+import dash_bootstrap_components as dbc
 def getverifyNumberFunction(min, max, integer=False):
     def result(property, number):
         if number < min:
@@ -75,3 +76,61 @@ def getDateInput(id):
             id=id,
             date=datetime.date.today()  # set today's date as the default
         ), 'date'
+
+def getNumberFilter(id):
+    return html.Div([
+        # Checkbox
+        dcc.Checklist(
+            id=id + '-checkbox',
+            options=[id],
+            value=[],
+        ),
+
+        # Min input with label
+        dbc.Col([
+            dbc.Row([html.Label('Min:'), dcc.Input(
+                id=id + '-min',
+                type='number',
+                disabled=False #TODO: Set to true and change dynamically when possible
+            )])
+        ]),
+
+        # Max input with label
+        dbc.Col([
+            dbc.Row([html.Label('Max:'), dcc.Input(
+                id=id + '-max',
+                type='number',
+                disabled=False #TODO: Set to true and change dynamically when possible
+            )])
+        ]),
+    ])
+
+def getDateFilter(id):
+    return html.Div([
+        # Checkbox
+        dcc.Checklist(
+            id=id + '-checkbox',
+            options=[id],
+            value=[],
+        ),
+
+        # Min input with label
+        dbc.Col([
+            dbc.Row([html.Label('From:'), dcc.DatePickerSingle(
+            id=id + '-min',
+            date=datetime.date.today()  # set today's date as the default
+            )])
+        ]),
+
+        # Max input with label
+        dbc.Col([
+            dbc.Row([html.Label('To:'), dcc.DatePickerSingle(
+            id=id + '-max',
+            date=datetime.date.today()  # set today's date as the default
+            )])
+        ])
+    ])
+
+def displayDate(day):
+    epoch = datetime.date(1970, 1, 1)
+    return epoch + datetime.timedelta(days=day)

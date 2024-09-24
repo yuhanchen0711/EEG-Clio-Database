@@ -84,7 +84,6 @@ def display_page(pathname):
 )
 def input_data(n_clicks, *args):
         #Check the correctness of the input
-    print(args)
     compositions = check_validity(args)
     if isinstance(compositions, str):
         return [compositions, True]
@@ -99,7 +98,7 @@ def update_output(contents, filename):
     if contents is not None:
         children = parse_contents(contents, filename)
         return [children, True]
-
+'''
 @app.callback(
     Output('container', 'children'),
     Input('form-options', 'data')
@@ -121,6 +120,57 @@ def generate_options(a):
         form_elements.append(column)
     
     return form_elements
+'''
+@app.callback(
+    Output('container', 'children'),
+    Input('form-options', 'data')
+)
+def generate_options(a):
+    form_options = get_choices()
+    form_elements = []
+    for category in form_options:
+        if category['Title'] == 'Dependent variables':
+            column = []
+            for index, row in PROPERTY.iterrows():
+                column.append(row['Type'].selectstructure(row['Property']))
+            column = html.Form(id=category["Title"], className='column', style={'flex': '1', 'padding': '10px', 'flex-direction': 'row'}, children=column)
+        elif category['Title'] == 'Independent variables':
+            column = []
+            for index, row in INPUT.iterrows():
+                column.append(row['Type'].selectstructure(row['Property']))
+            column = html.Form(id=category["Title"], className='column', style={'flex': '1', 'padding': '10px', 'flex-direction': 'row'}, children=column)
+        else:
+            column = html.Form(id=category["Title"], className='column', style={'flex': '1', 'padding': '10px', 'flex-direction': 'row'}, children=[
+                html.Div([
+                    # Checkbox
+                    dcc.Checklist(
+                        id=id + '-checkbox',
+                        options=[id],
+                        value=[],
+                    ),
+
+                    # Min input with label
+                    dbc.Col([
+                        dbc.Row([html.Label('Min:'), dcc.Input(
+                            id=id + '-min',
+                            type='number',
+                            disabled=False #TODO: Set to true and change dynamically when possible
+                        )])
+                    ]),
+
+                    # Max input with label
+                    dbc.Col([
+                        dbc.Row([html.Label('Max:'), dcc.Input(
+                            id=id + '-max',
+                            type='number',
+                            disabled=False #TODO: Set to true and change dynamically when possible
+                        )])
+                    ]),
+                ])
+            for id in category["Options"]])
+        form_elements.append(column)
+    
+    return form_elements
 
 # Home page call back functions
 def generate_options_df(form_elements):
@@ -128,7 +178,7 @@ def generate_options_df(form_elements):
     for current in form_elements:
         current_column = current['props']['children']
         options[current_column[0]['props']['children']] = current_column[1]['props']['children']['props']['value']
-    df = generate_df(options['Basic Properties'], options['Solvents'], options['Salts'])
+    df = generate_df(options['Dependent variables'], options['Independent variables'], options['Solvents'], options['Salts'])
     return options, df
 
 @app.callback(
@@ -171,7 +221,9 @@ def download_table(n_clicks, data):
 )
 def show_graph(n_clicks, form_elements=None):
     # Extract selected options from form_elements
-    options, df = generate_options_df(form_elements)       
+    options, df = generate_options_df(form_elements)
+    print(options)
+    print(df)
     for i in range(len(options['Solvents'])):
         options['Solvents'][i] += '_Percentage'
     for i in range(len(options['Salts'])):

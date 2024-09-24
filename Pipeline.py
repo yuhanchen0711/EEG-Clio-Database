@@ -17,12 +17,12 @@ from TypeFunctions import *
 import json
 
 DATE_FORMATS = ["%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d"]
-float_customtype = CustomType(getverifyNumberFunction(0, float('inf')), getNumberInput)
-PROPERTY = pd.DataFrame({'Property':['Mass', 'Volume', 'Density', 'Conductivity', 'Viscosity'], 'Type':[float_customtype, float_customtype, float_customtype, float_customtype, float_customtype], 'Units':['g', 'cm^3', 'g/cm^3', 'mS/cm', 'cP']})
+float_customtype = CustomType(getverifyNumberFunction(0, float('inf')), getNumberInput, selectstructure=getNumberFilter)
+PROPERTY = pd.DataFrame({'Property':['Density', 'Conductivity', 'Viscosity', 'Mass', 'Volume'], 'Type':[float_customtype, float_customtype, float_customtype, float_customtype, float_customtype], 'Units':['g', 'cm^3', 'g/cm^3', 'mS/cm', 'cP']})
 INPUT = pd.DataFrame({'Property':['Temperature', 'CompositionID', 'Date', 'Trial'], 
-    'Type':[CustomType(getverifyNumberFunction(-273.15, float('inf')), getNumberInput), 
+    'Type':[CustomType(getverifyNumberFunction(-273.15, float('inf')), getNumberInput, selectstructure=getNumberFilter), 
     CustomType(verifyCompositionID, getStringInput), 
-    CustomType(getVerifyDateFunction(DATE_FORMATS), getDateInput),
+    CustomType(getVerifyDateFunction(DATE_FORMATS), getDateInput, displayMethod=displayDate, selectstructure=getDateFilter),
     CustomType(getverifyNumberFunction(0, float('inf'), integer=True), getNumberInput)], 
     'Units':['C', '', '', '#']})
 ALL_INPUT = pd.concat([PROPERTY, INPUT])
@@ -41,7 +41,6 @@ DEFAULT_DB = "Database.db"
 def get_data_from_database(query, db_file=DEFAULT_DB):
     # Connect to the SQLite database
     conn = sqlite3.connect(db_file)
-    print(query)
     try:
         # Use pandas to execute the SQL query and return a DataFrame
         df = pd.read_sql(query, conn)
@@ -77,7 +76,7 @@ def generate_edit_queries(compositions):
         columns = ', '.join(compositions[0][current].keys())
 
         # Generate SQL query to create table
-        create_table_query = f"CREATE TABLE IF NOT EXISTS {table_name} (ID INTEGER(32) PRIMARY KEY, {', '.join(compositions[0][current].keys())})"
+        create_table_query = f"CREATE TABLE IF NOT EXISTS {table_name} (ID INTEGER(32), {', '.join(compositions[0][current].keys())})"
         queries.append((create_table_query, ""))
     for current_composition in compositions:
         GUID = hash_datapoint(current_composition['experiments'])
@@ -91,16 +90,19 @@ def generate_edit_queries(compositions):
             for index, row in new_df.iterrows():
                 columns = ', '.join(new_df.columns)
                 placeholders = ', '.join(["?" for _ in row])
-                query = f"INSERT OR REPLACE INTO {current_table} (ID, {columns}) VALUES (?, {placeholders})"
+                if current_table == MAIN_NAME:
+                    query = f"INSERT OR REPLACE INTO {current_table} (ID, {columns}) VALUES (?, {placeholders})"
+                else:
+                    query = f"INSERT INTO {current_table} (ID, {columns}) VALUES (?, {placeholders})"
                 queries.append((query, (GUID,) + tuple(row)))
     return queries
     
 
-def generate_query(properties, solvents, salts, logic='and'):
+def generate_query(dependent_variables, independent_variables, solvents, salts, logic='and'):
     query = "SELECT e.ID AS ExperimentID"
     query2 = ') AS ID'
     query3 = "COALESCE(d.ID"
-    for current in properties:
+    for current in dependent_variables + independent_variables:
         query += ', ' + current
     for current in solvents:
         if logic == 'or':
@@ -118,9 +120,11 @@ def generate_query(properties, solvents, salts, logic='and'):
             query += ',' + ' COALESCE(' + current.lower() + '_M, 0) AS ' + current + '_Molality'
     
     way = ' INNER'
+    salt_way = ' INNER'
     previous = 'e'
     if logic == 'or':
         way = ' FULL'
+        salt_way = ' LEFT'
         query += ' FROM (SELECT ' + query3 + query2 + ' FROM dummy d'
         previous = 'd'
     else:
@@ -129,7 +133,7 @@ def generate_query(properties, solvents, salts, logic='and'):
         query += way + " JOIN (SELECT ID, percentage as " + current.lower() + "_P FROM solvents WHERE solvent = '" + current + "') " + current.lower() + " ON " + previous + ".ID = " + current.lower() + ".ID"
         previous = current.lower()
     for current in salts:
-        query += " INNER JOIN (SELECT ID, molality as " + current.lower() + "_M FROM salts WHERE salt = '" + current + "') " + current.lower() + " ON " + previous + ".ID = " + current.lower() + ".ID"
+        query += salt_way + " JOIN (SELECT ID, molality as " + current.lower() + "_M FROM salts WHERE salt = '" + current + "') " + current.lower() + " ON " + previous + ".ID = " + current.lower() + ".ID"
         previous = current.lower()
     if logic == 'or':
         query = query + ' GROUP BY ' + query3 + ')) ex'
@@ -203,9 +207,17 @@ def generate_graph(df, file_name, c, x, y, z=None):
 
     return img_base64
 
-def generate_df(properties, solvents, salts):
-    query = generate_query(properties, solvents, salts, logic='or')
-    return get_data_from_database(query, db_file=DEFAULT_DB)
+def generate_df(dependent_variables, independent_variables, solvents, salts):
+    query = generate_query(dependent_variables, independent_variables, solvents, salts, logic='or')
+    df = get_data_from_database(query, db_file=DEFAULT_DB)
+    column_names = set(df.columns)
+    for index, row in ALL_INPUT.iterrows():
+        if row['Property'] in column_names:
+            current_type = row['Type']
+            df[row['Property']] = df[row['Property']].apply(current_type.displayMethod)
+    return df
+
+    
 
 def graphs(properties, solvents, salts):
     df = generate_df(properties, solvents, salts)
@@ -238,7 +250,9 @@ def get_choices():
     salt_query = "SELECT DISTINCT salt FROM salts"
     solvents = get_data_from_database(solvent_query)['solvent'].tolist()
     salts = get_data_from_database(salt_query)['salt'].tolist()
-    options = [{"Title":"Basic Properties", "Options":sorted(PROPERTIES, key=str.lower)},
+    form_names = get_data_from_database("SELECT name FROM sqlite_master WHERE type = 'table'")['name'].tolist()
+    options = [{"Title":"Dependent variables", "Options":sorted(PROPERTY['Property'], key=str.lower)},
+      {"Title":"Independent variables", "Options":sorted(INPUT['Property'], key=str.lower)},
       {"Title":"Solvents", "Options":sorted(solvents, key=str.lower)},
       {"Title":"Salts", "Options":sorted(salts, key=str.lower)}]
     return options
@@ -248,7 +262,6 @@ def convert_date(date_string):
         try:
             # Parse the date string according to the given input format
             date_obj = datetime.strptime(date_string, input_format)
-            
             # Convert the date object to "MM/DD/YYYY" format
             formatted_date = date_obj.strftime("%m/%d/%Y")
             return formatted_date
