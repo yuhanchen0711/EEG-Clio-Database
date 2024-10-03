@@ -3,8 +3,9 @@ import io
 from dash import Dash, dash_table, html, dcc, callback, Output, Input, State
 import plotly.express as px
 import pandas as pd
+import numpy as np
 import dash_bootstrap_components as dbc
-from Pipeline import get_choices, generate_df, insert_new_data, insert_new_data_bulk, PROPERTY, INPUT, ALL_INPUT, PROPERTIES, UNITS, convert_date, DATE_FORMATS, check_validity, parse_contents
+from Pipeline import *
 from io import StringIO
 import datetime
 import binascii
@@ -12,6 +13,8 @@ import binascii
 app = Dash(__name__, suppress_callback_exceptions=True)
 input_properties = ["CompositionID"]
 GUID_LENGTH = 32
+labels = []
+MARGIN = 0.3
 
 # Define the layout of the app
 app.layout = html.Div([
@@ -98,7 +101,7 @@ def update_output(contents, filename):
     if contents is not None:
         children = parse_contents(contents, filename)
         return [children, True]
-'''
+
 @app.callback(
     Output('container', 'children'),
     Input('form-options', 'data')
@@ -107,69 +110,44 @@ def generate_options(a):
     form_options = get_choices()
     form_elements = []
     for category in form_options:
-        column = html.Form(id=category["Title"], className='column', style={'flex': '1', 'padding': '10px', 'flex-direction': 'row'}, children=[
-            html.Div(category["Title"], className='title'),
-            html.Div(
-                dcc.Checklist(
-                    className = category["Title"],
-                    options=[{'label': option, 'value': option} for option in category["Options"]],
-                    value=[]
-                )
-            ) 
-        ])
-        form_elements.append(column)
-    
-    return form_elements
-'''
-@app.callback(
-    Output('container', 'children'),
-    Input('form-options', 'data')
-)
-def generate_options(a):
-    form_options = get_choices()
-    form_elements = []
-    for category in form_options:
-        if category['Title'] == 'Dependent variables':
-            column = []
-            for index, row in PROPERTY.iterrows():
-                column.append(row['Type'].selectstructure(row['Property']))
-            column = html.Form(id=category["Title"], className='column', style={'flex': '1', 'padding': '10px', 'flex-direction': 'row'}, children=column)
-        elif category['Title'] == 'Independent variables':
-            column = []
-            for index, row in INPUT.iterrows():
-                column.append(row['Type'].selectstructure(row['Property']))
+        column = [html.Label(category['Title']), 
+        dcc.RadioItems(
+            id=category['Title'] + '-radio',  # ID for callback reference
+            options=[
+                {'label': 'and', 'value': 'and'},
+                {'label': 'or', 'value': 'or'},
+            ],
+            value='or'  # Default selected value
+        )]
+        variables = PROPERTY if category['Title'] == 'Dependent variables' else INPUT
+        if category['Title'] == 'Dependent variables' or category['Title'] == 'Independent variables':
+            for index, row in variables.iterrows():
+                structure = row['Type'].selectstructure(row['Property'])
+                labels.append(row['Property'])
+                if structure:
+                    column.append(structure)
             column = html.Form(id=category["Title"], className='column', style={'flex': '1', 'padding': '10px', 'flex-direction': 'row'}, children=column)
         else:
-            column = html.Form(id=category["Title"], className='column', style={'flex': '1', 'padding': '10px', 'flex-direction': 'row'}, children=[
-                html.Div([
-                    # Checkbox
-                    dcc.Checklist(
-                        id=id + '-checkbox',
-                        options=[id],
-                        value=[],
-                    ),
+            for label in category['Options']:
+                labels.append(label)
+                checkbox = dcc.Checklist(id=label + '-checkbox', options=[label], value=[])
+                min_input = dcc.Input(id=label + '-min', type='number', disabled=False, value=None)
+                max_input = dcc.Input(id=label + '-max',type='number', disabled=False, value=None)
+                column += [
+                    html.Div([checkbox,
 
-                    # Min input with label
-                    dbc.Col([
-                        dbc.Row([html.Label('Min:'), dcc.Input(
-                            id=id + '-min',
-                            type='number',
-                            disabled=False #TODO: Set to true and change dynamically when possible
-                        )])
-                    ]),
+                        # Min input with label
+                        dbc.Col([
+                            dbc.Row([html.Label('Min:'), min_input])
+                        ]),
 
-                    # Max input with label
-                    dbc.Col([
-                        dbc.Row([html.Label('Max:'), dcc.Input(
-                            id=id + '-max',
-                            type='number',
-                            disabled=False #TODO: Set to true and change dynamically when possible
-                        )])
-                    ]),
-                ])
-            for id in category["Options"]])
+                        # Max input with label
+                        dbc.Col([
+                            dbc.Row([html.Label('Max:'), max_input])
+                        ]),
+                    ])]
+            column = html.Form(id=category["Title"], className='column', style={'flex': '1', 'padding': '10px', 'flex-direction': 'row'}, children=column)
         form_elements.append(column)
-    
     return form_elements
 
 # Home page call back functions
@@ -177,8 +155,25 @@ def generate_options_df(form_elements):
     options = {}
     for current in form_elements:
         current_column = current['props']['children']
-        options[current_column[0]['props']['children']] = current_column[1]['props']['children']['props']['value']
-    df = generate_df(options['Dependent variables'], options['Independent variables'], options['Solvents'], options['Salts'])
+        column_name = current_column[0]['props']['children']
+        options[column_name] = {LOGIC:current_column[1]['props']['value']}
+        for i in range(2, len(current_column)):
+            current_variable = current_column[i]
+            current_structure = current_variable['props']['children']
+            if current_structure[0]['props']['value']:
+                current_label = current_structure[0]['props']['value'][0]
+                options[column_name][current_label] = {}
+                try:
+                    current_type = ALL_INPUT.loc[ALL_INPUT['Property'] == current_label, 'Type'].values[0]
+                    min_value = current_type.verify(current_label, current_structure[1]['props']['children'][0]['props']['children'][1]['props'][current_type.structureValue])
+                    options[column_name][current_label]['min'] = None if isinstance(min_value, str) else min_value
+                    max_value = current_type.verify(current_label, current_structure[2]['props']['children'][0]['props']['children'][1]['props'][current_type.structureValue])
+                    options[column_name][current_label]['max'] = None if isinstance(max_value, str) else max_value
+                except IndexError as e:
+                    options[column_name][current_label]['min'] = current_structure[1]['props']['children'][0]['props']['children'][1]['props']['value']
+                    options[column_name][current_label]['max'] = current_structure[2]['props']['children'][0]['props']['children'][1]['props']['value']
+
+    df = generate_df(options)
     return options, df
 
 @app.callback(
@@ -222,24 +217,57 @@ def download_table(n_clicks, data):
 def show_graph(n_clicks, form_elements=None):
     # Extract selected options from form_elements
     options, df = generate_options_df(form_elements)
-    print(options)
-    print(df)
-    for i in range(len(options['Solvents'])):
-        options['Solvents'][i] += '_Percentage'
-    for i in range(len(options['Salts'])):
-        options['Salts'][i] += '_Molality'
-    interest = options['Solvents'] + options['Salts']
-    if len(options['Basic Properties']) < 1:
-        return html.Div('Please select at least one basic properties.')
-    if len(interest) < 1:
-        return html.Div('Please select at least one solvent or salt.')
+    variable_names = set(df.columns.tolist())
+    variable_names.discard('ID')
+    properties = set()
+    for current in variable_names:
+        if current in set(PROPERTY['Property']):
+            properties.add(current)
+    for current in properties:
+        variable_names.discard(current)
+    variable_names = list(variable_names)
+    properties = list(properties)
+    if len(variable_names) < 1:
+        return html.Div('Please select at least one independent variables.')
     result = []
-    if len(interest) == 1:
-        result = [px.scatter(df, x=interest[0], y=i, hover_data=interest) for i in options['Basic Properties']]
-    elif len(interest) == 2:
-        result = [px.scatter_3d(df, x=interest[0], y=interest[1], z=i, hover_data=interest) for i in options['Basic Properties']]
+    hover_template_parts = [f"{current}: %{{customdata[{i}]}}" for i, current in enumerate(properties)]
+    hover_template = '<br>'.join(hover_template_parts) + '<extra></extra>'
+    property_minmax = {}
+    for current in properties:
+        property_minmax[current] = [min(df[current]), max(df[current])]
+        property_minmax[current].append(property_minmax[current][1] - property_minmax[current][0])
+    if len(variable_names) == 1:
+        result = [px.scatter(df, x=variable_names[0], y=i) for i in properties]
+        for current, property in zip(result, properties):
+            current.update_traces(customdata=df[properties].to_numpy(), 
+                    hovertemplate=
+                        variable_names[0] + ': %{x}<br>' +
+                        hover_template
+                    )
+            current.update_layout(
+                        scene=dict(
+                            yaxis=dict(range=[property_minmax[property][0] - MARGIN * property_minmax[property][2], 
+                            property_minmax[property][1] + MARGIN * property_minmax[property][2]])
+                        )
+                    )
     else:
-        result = [px.scatter_3d(df.dropna(subset=[i]), x=interest[0], y=interest[1], z=interest[2], color=i, hover_data=interest) for i in options['Basic Properties']]
+        for i in range(len(variable_names)):
+            for j in range(i + 1, len(variable_names)):
+                new = [px.scatter_3d(df, x=df[variable_names[i]], y=df[variable_names[j]], z=k) for k in properties]
+                for current, property in zip(new, properties):
+                    current.update_traces(customdata=df[properties].to_numpy(), 
+                    hovertemplate=
+                        variable_names[i] + ': %{x}<br>' +
+                        variable_names[j] + ': %{y}<br>' +
+                        hover_template
+                    )
+                    current.update_layout(
+                        scene=dict(
+                            zaxis=dict(range=[property_minmax[property][0] - MARGIN * property_minmax[property][2], 
+                            property_minmax[property][1] + MARGIN * property_minmax[property][2]])
+                        )
+                    )
+                result += new
     return [dcc.Graph(figure=i) for i in result]
 
 if __name__ == '__main__':

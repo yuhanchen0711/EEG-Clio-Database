@@ -4,6 +4,8 @@ from dash import Dash, dash_table, html, dcc
 import dash_bootstrap_components as dbc
 def getverifyNumberFunction(min, max, integer=False):
     def result(property, number):
+        if not isinstance(number, (int, float)):
+            return f'{property} must be a number!'
         if number < min:
             return f'{property} must be greater than {min}!'
         elif number > max:
@@ -50,7 +52,7 @@ def verifyCompositionID(property, str):
             return error_comp_id
         if percentage[i] <= 0:
             return error_comp_id
-    return {'solvents': {'solvent':solvents, 'percentage':percentage}, 'salts': {'salt':salts, 'molality':molality}}
+    return {'Solvents': {'solvent':solvents, 'percentage':percentage}, 'Salts': {'salt':salts, 'molality':molality}}
 
 def getVerifyDateFunction(allowed_formats):
     def verifyDate(property, date_string):
@@ -91,7 +93,8 @@ def getNumberFilter(id):
             dbc.Row([html.Label('Min:'), dcc.Input(
                 id=id + '-min',
                 type='number',
-                disabled=False #TODO: Set to true and change dynamically when possible
+                disabled=False,
+                value=None
             )])
         ]),
 
@@ -100,7 +103,8 @@ def getNumberFilter(id):
             dbc.Row([html.Label('Max:'), dcc.Input(
                 id=id + '-max',
                 type='number',
-                disabled=False #TODO: Set to true and change dynamically when possible
+                disabled=False,
+                value=None
             )])
         ]),
     ])

@@ -1,6 +1,6 @@
 from dash import html
 class CustomType:
-    def __init__(self, verify, inputstructure, selectstructure=lambda x:[], displayMethod=lambda x:x):
+    def __init__(self, verify, inputstructure, selectstructure=lambda x:None, displayMethod=lambda x:x):
         self.check = verify
         self.inputs = inputstructure
         self.structureValue = None
